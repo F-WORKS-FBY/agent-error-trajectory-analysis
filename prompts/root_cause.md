@@ -217,6 +217,28 @@
 
 反事实问题:"如果只修正该 step,前序不变,后续是否大概率避免失败?" 答"是"则更可能是根因。
 
+**Step 4.5(强制**双向**自检 —— 既防执行者偏置,也防过度归因 planner):** 两个方向都要走,填好 `delegation_trace` 再敲定 `agent`/`step`。
+
+**方向 A(初选根因是执行步 → 该不该回溯到 planner?):**
+1. 先看 `delegate_linkage_hints` 有没有指向这一步(注意 `strength`:`weak` 仅作用域重叠,分量低);再回到 `candidate_steps_excerpts` 里它**最近的前驱 delegate(带 `role_hint=SPEC`)**。
+2. 把那段委派/计划**逐字读完**,并**与任务明示的要求/方法/接口规范逐项对照**,问:**「照这段计划字面实现出来,会不会就出现这个失败?」** 缺陷有三类,**都算**:
+   - **值错**:写错常量/公式/单位(如 `*10` 应为 `*1000`)。
+   - **结构/逻辑错**:步骤顺序排错、条件放错位置、漏判、把本应独立的门嵌进别的分支(**即便每个值都对**)。
+   - **做法/工具/数据源选错(易漏)**:计划选定的 approach/命令/数据源/接口与任务**明示**的要求**矛盾**——例:任务明说用 routing table(`ip route show table local`),计划却委派 `ip addr show`;此时无论实现多忠实都拿不到正确结果。这属 planner **无视任务明示约束**。
+   把会致错的那句/那段**原话**摘出来。
+3. 是(计划字面照做即失败,或计划做法违背任务明示要求)→ 缺陷在委派里**引入**,根因回溯到 **delegate 步**(执行步只是 `propagation`);`is_faithful_implementation=true`、`defect_in_quote=true`;`primary_category` 取 **`C1_flawed_plan`**(逻辑/值错)或 **`A2_ignored_constraint`**(无视任务明示方法/约束)。
+4. 否(执行者**偏离/误读**计划、**自行新增**了计划之外的错误,或计划只点了函数/区域、其逻辑本身**字面照做不会致错**)→ 根因**留在执行步**,`is_faithful_implementation=false`。**仅作用域相同、或 hint=weak,不足以回溯。**
+
+> **双向都要防偏**:既不能把执行者的独立错误甩给 planner(过度归因),也**不能因为"计划里的值都对"就放过顺序/条件/遗漏/选错做法型的计划缺陷**(欠归因)。决定性判据始终是反事实(**改这一步、其余不变,失败能否避免**)+ **字面照做计划会不会必然致错** + **计划做法是否违背任务明示要求**。
+>
+> **样例①(结构型计划缺陷 → C1):** 计划规定 `canSendValidation` 先按 `ttlMs+intervalMs<expiryMs` 判 resend、最后才"如提供 email 再校验匹配"。公式阈值全对,但 email 校验**排在时间窗判断之后**,换**不同 email** 重发时被错误拦截。执行者忠实照此顺序实现 → 根因 = **delegate 步**、`C1_flawed_plan`、`defect_in_quote=true`,执行步 `propagation`。
+> **样例②(选错数据源 → A2):** 任务明说"locally reachable ranges 用 **routing table queries**"(示例含 `192.168.1.0/24`,只可能来自路由表),但 delegate 明确要求 ActionAgent 用 **`ip addr show`** 过滤 scope host(只看接口地址)。执行者忠实照做 → 根因 = 该 **delegate 步**、agent 用委派态名、`A2_ignored_constraint`(无视任务明示方法)、`defect_in_quote=true`,执行步 `propagation`;验证者放行 → `E1` contributing。
+
+**方向 B(初选根因是 planner 任一形态 `DiagnostAgent` / `(-> ActionAgent)` / `(-> JudgeAgent)` → 是不是该往下落?):**
+1. 你指的 `step` 是不是一个**真正的 planner 步**(该 agent 的 `delegate` 步或 planner 作者步)?不是 → 你其实在把下游执行/验证错误甩给 planner,**改回真正出错的那一步**。
+2. 主因是不是**规划协作类**(`C1`/`C2`/`C3`)?若你想填的是执行/验证类(D*/E*),说明锅不在计划本身 → 根因不该落 planner。
+3. 若是**验证者漏检**(JudgeAgent 没拦住 bug):那是失效屏障 → `E1_verification_gap` 进 `contributing_factors`,根因落在**真正引入缺陷的步**;**不要**把它甩给 `(-> JudgeAgent)` 委派步(除非该委派原文**明确规定了错误的验证方法**,并据实引用)。
+
 ### Step 5:分析错误传播链
 
 - 根因产生了什么错误状态?
@@ -242,7 +264,11 @@
 - `valid_agents`:全局出现过的所有 agent 原名(数组)
 - `phases`:Stage 3 输出的 PhaseSummary JSON
 - `local_summaries`:所有 segment 的 LocalSummary 数组
-- `candidate_steps_excerpts`:候选 step 的原文回拉(`step_id, agent, action_type, exit_code, content_head, content_tail, step_hash`)
+- `delegate_linkage_hints`(**可能为空**):由 pipeline **确定性**检测到的「执行步↔(委派给该执行者的)委派步」忠实实现线索数组。每条形如 `{"executor_step", "prescribed_by_delegate_step", "delegate_agent", "delegate_target", "strength", "cites_plan", "overlap", "shared_count", "shared_identifiers", "note"}`,表示某执行步**疑似只是在照搬**某个上游委派。
+  - **`strength` 决定线索分量**:`"strong"` = 执行步正文显式声称"照计划/按委派"(如 `per the plan`);`"weak"` = 仅与委派**共享代码标识符**(改同一文件/函数,作用域重叠)。**`weak` 仅是作用域线索,绝不等于"缺陷来自委派"**——多数执行步本就在 planner 点名的函数里改代码,标识符自然重合。
+  - **必须逐条核对**,但**核对 ≠ 采纳**:据此判断根因该不该回溯到 delegate 步(见 §2.3),结论写进 `delegation_trace`。这是机器线索而非定论——执行者若**偏离/误读/新增了计划之外的错误**,即便 hint 命中,根因**仍留在执行步**。
+  - hint 只会链到"委派给该执行者"的委派(`delegate_target` 即该执行者);**不会**指向 `(-> JudgeAgent)`。验证者自身漏检不在此列(见 §2.3)。
+- `candidate_steps_excerpts`:候选 step 的**完整正文**回拉(`step_id, agent, action_type, exit_code, content(完整,不截断), step_hash`;delegate 步带 `role_hint="SPEC(规范来源)"`,代表 planner 的委派/计划,缺陷常在此引入,优先核查)
 
 ---
 
@@ -261,6 +287,13 @@
   "contributing_factors": ["C1_flawed_plan"],
   "detailed_analysis": {
     "task_summary": "<中文>",
+    "delegation_trace": {
+      "checked": true,
+      "is_faithful_implementation": false,
+      "prescribed_by_step": null,
+      "quote": "",
+      "defect_in_quote": false
+    },
     "failure_chain": [
       {"step": "186", "agent": "ActionAgent", "role": "root_cause", "description": "<中文>"},
       {"step": "243", "agent": "Computer_terminal", "role": "exposure", "description": "<中文>"},
@@ -274,13 +307,26 @@
 }
 ```
 
+**`delegation_trace`(必填,先填它再定 `agent`/`step`)** —— 这是防「执行者偏置」**与**「过度归因 planner」的双向强制自检:
+- `checked`:固定 `true`,表示你已对你**初步选中的那个根因步**做过「它是不是在照搬上游委派/计划」的检查。
+- `is_faithful_implementation`:你选中的根因步若是**执行步**,它是否**一字不差地实现了**某个前驱 `delegate`/计划里写明的(有缺陷的)指令?是→`true`。
+- `prescribed_by_step`:若 `true`,填**那个 delegate 步的 step_id**(数字);否则 `null`。
+- `quote`:若 `true`,从该 delegate **原文里逐字摘录被照搬的那一句**(必须能在该 step 正文中按字面找到——pipeline 会机器校验它是否为原文子串;引不出 = 视为无效回溯并打回重写)。否则空串。
+- `defect_in_quote`:若 `true`,断言被引用的这段计划**本身就会导致该失败**,而**不只是**"提到了这块区域/这个函数名"。判据一句话:**「照这段计划字面实现出来,就会出现这个失败吗?」是 → `true`。** 缺陷有三类,**都算**:
+  - **值错**:写错某个常量/公式/单位(如 `*10` 应为 `*1000`)。
+  - **结构/逻辑错(易漏)**:步骤**顺序**排错、判断**条件放错位置**、**漏判**、把本应独立的门**嵌进**别的分支……**即便每个值都对**。例:`canSendValidation` 把 email 匹配排在 TTL/interval 判断**之后** → 顺序错,照做必失败。
+  - **做法/工具/数据源选错(易漏)**:计划选的 approach/命令/数据源/接口与任务**明示**要求**矛盾**(例:任务说用 routing table,计划用 `ip addr show`)→ 无论实现多忠实都拿不到正确结果。
+  - 作用域相同 ≠ 缺陷来自委派;但"值都对"也 ≠ 计划无缺陷。只有 `defect_in_quote=true`(值错 / 结构错 / 做法违背任务明示要求)才支撑回溯。
+- 当 `is_faithful_implementation=true`:**必须**把 `agent`/`step` 改成该 delegate 步(`agent` 用委派态名)、`primary_category` 设 `C1_flawed_plan`,并在 `failure_chain` 里把执行步标 `propagation`、delegate 步标 `root_cause`(见 §9 #13)。
+- 当根因**不是**忠实实现(执行者偏离/误读/新增了计划外错误,或缺陷本就在执行步)→ `is_faithful_implementation=false`、`defect_in_quote=false`,根因**留在执行步**,不要回溯。
+
 ## 9. 强约束(违反任一即重生成)
 
 1. **输出仅一个合法 JSON 对象**,无 markdown 围栏,无 `<think>`。
 2. `step` 是**数字字符串**(如 `"186"`)或 `"system_evaluation"`。若是数字,必须 ∈ `valid_step_ids` 全局集合。
 3. `agent` ∈ `valid_agents` 数组,或属于 `{SYSTEM, TOOL, PLATFORM, ENVIRONMENT, USER_INTENT_UNDERSPECIFIED}`。
 4. `evidence_step_ids`:每个 int 必须 ∈ `valid_step_ids` 全局集合;**至少 1 个**(`abstain=false` 时);允许多达 10 个。
-5. `reason` 是**唯一的完整根因解释**(2-4 句,信息要全),展示与填表都用它;不要再单列简短版。
+5. `reason` 是**唯一的完整根因解释**(2-4 句,信息要全),展示与填表都用它;不要再单列简短版。**必须证据绑定**:至少引用以下一类**具体证据**并指明出处——(a)被违反的**任务要求原文片段**(如"任务要求 routing table queries"),(b)**verifier/测试失败信号**,(c)**具体代码行 / 被照搬的委派原话**。**禁止只给"看似合理但无证据"的机制猜测**(如凭空说"会抛 KeyError"却无失败信号佐证);拿不准的机制要么找到证据,要么在 reason 里如实标注为推测并降 `confidence`。
 6. `abstain`:仅在你**真正无法判定根因**(证据严重不足)时设 `true`。设 true 时:
    - `confidence` **必须** 为 `"low"`
    - `primary_category` 仍必须给 1 项最可能猜测
@@ -292,7 +338,13 @@
 10. **中文输出**(`reason / task_summary / description / counterfactual / confidence_reason / expert_review_hints` 全部中文);**字段名 / enum 值 / agent 名 / category code 保持英文**。
 11. 即使轨迹中 agent 调用了 `finish()` 或声称成功,只要 `is_correct=false`,你仍必须定位失败根因。
 12. **在选 `X2_unrecoverable_environment` 或 `D2_unrecovered_tool_failure` 前**,必须按 §5.x 表自检"任务是否允许 agent 自行修复"。若允许,改选 A/B/D3/E 中合适项。
-13. **多 agent 追责(见 §2.3)**:根因必须是**最早**引入**缺陷**的步。**faithful implementation 不是根因**(执行者忠实实现了上游有缺陷的计划/委派 → 根因归 planner 的委派步、agent 用委派态名、执行步标 `propagation`);**failed safeguard 不是根因**(verifier 漏检 / 没复查 → 归 `contributing_factors:[E1_verification_gap]`,不当 primary)。
+13. **多 agent 追责(见 §2.3)+ `delegation_trace` 强制自检**:根因必须是**最早**引入**缺陷**的步。以下由 pipeline **机器校验,违反即打回重写**:
+    - **必须输出 `detailed_analysis.delegation_trace`**(`checked/is_faithful_implementation/prescribed_by_step/quote/defect_in_quote` 五字段齐全)。
+    - **faithful implementation 不是根因**:若 `is_faithful_implementation=true`,则 `step` **必须** = `prescribed_by_step`(那个 delegate 步)、`agent` 用**委派态名**(如 `DiagnostAgent (-> ActionAgent)`)、`primary_category ∈ {C1_flawed_plan, A2_ignored_constraint}`(计划逻辑/值错→C1;计划无视任务明示方法/约束→A2);`failure_chain` 里 delegate 步标 `root_cause`、原执行步标 `propagation`;**`quote` 必须能在该 `prescribed_by_step` 正文里按字面找到**(机器核验子串;引不出 → 判错重生成),且该句/该段**本身就会致此失败**(`defect_in_quote=true`,含"做法违背任务明示要求")。
+    - **任何 planner 形态归因都要落到 planner 自己的步**:当 `agent` 是 `DiagnostAgent` / `DiagnostAgent (-> ActionAgent)` / `DiagnostAgent (-> JudgeAgent)`(或 Magentic 对应),`step` **必须是真正的 planner 步**,且 `primary_category` **不得**是执行/验证/非agent类(`D*` / `E*` / `X*`)——那是执行者/验证者/环境的责任;planner 可配 理解(A)/认知(B)/规划(C)类。不得把下游错误默认甩给 planner。
+    - **防过度回溯护栏**:只有当执行步**忠实落实了委派里写明的那个缺陷**(值错**或**结构/逻辑错)才回溯;若执行者**偏离计划、误读委派、或自行新增了计划之外的错误**(或 hint 仅 `strength=weak` 的作用域重叠),则 `is_faithful_implementation=false`,根因**留在执行步**(按其错误类型选 B/C/D…),**不得**把执行者的独立错误甩锅给 planner。
+    - **防欠归因护栏(同等重要)**:**不要**因为"计划里的值/公式都对"就断定计划无缺陷。计划缺陷常是**结构型**——顺序错、条件放错位、漏判、错误嵌套。只要**字面照做该计划即会致此失败**且执行者忠实照做,根因就在 **delegate 步**(`C1_flawed_plan`、`defect_in_quote=true`),**不得**把它误判成执行者的独立错误而停在执行步。
+    - **failed safeguard 不是根因**:verifier(JudgeAgent)漏检 / 没复查 → 归 `contributing_factors:[E1_verification_gap]`,不当 primary,**更不归到 `(-> JudgeAgent)` 委派步**(除非该委派原文明确规定了错误的验证方法并被引用)。
 
 ---
 

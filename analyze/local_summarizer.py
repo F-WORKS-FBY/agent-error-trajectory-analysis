@@ -23,6 +23,10 @@ def _load_prompt() -> str:
 
 
 def _step_to_inline(step: Step) -> Dict[str, Any]:
+    # Round 6:发完整正文(不再 head/tail 截断;委派计划的核心逻辑常在中段)。仅极高安全帽防失控大 step。
+    content = step.content_full
+    if len(content) > config.STEP_FULL_MAX_CHARS:
+        content = content[: config.STEP_FULL_MAX_CHARS] + "\n…[truncated, oversized step]"
     return {
         "step_id": step.step_id,
         "agent": step.agent_name_raw,
@@ -31,8 +35,7 @@ def _step_to_inline(step: Step) -> Dict[str, Any]:
         "exit_code": step.exit_code,
         "verifier_signal": step.verifier_signal,
         "step_hash": step.step_hash,
-        "content_head": step.content_head,
-        "content_tail": step.content_tail if step.content_tail else None,
+        "content": content,
         "content_len": step.content_len,
     }
 
@@ -80,6 +83,7 @@ def summarize_segment(
         system=system, user=user,
         temperature=config.LLM_TEMPERATURE_DEFAULT,
         max_tokens=config.LLM_MAX_TOKENS_LOCAL,
+        reasoning_effort=config.LLM_REASONING_EFFORT_DEFAULT,
     )
     ls = LocalSummary(
         segment_id=seg.segment_id,

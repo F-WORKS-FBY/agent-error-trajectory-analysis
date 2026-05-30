@@ -14,6 +14,8 @@ This is a Python package named `MAS_trajectory_analysis` living at `MAS_trajecto
 pip install -r requirements.txt          # only dep: openai>=1.0
 export LLM_API_KEY=sk-...                 # required to call the LLM (DEEPSEEK_API_KEY also accepted)
 # optional: export LLM_BASE_URL / LLM_MODEL to point at any OpenAI-compatible endpoint (default DeepSeek)
+# NOTE: no python-dotenv dep — .env is NOT auto-loaded. `cp .env.example .env` alone does nothing;
+# you must `export` the vars or `set -a; source .env` (or override per-run with --model / --base-url).
 
 # classic layout: <input-dir>/<benchmark>/*.json
 cd ../  &&  python -m MAS_trajectory_analysis.run --benchmark swe_bench_pro --workers 4
@@ -49,6 +51,7 @@ There is **no test suite and no linter config**. `--dry-run` is the fast sanity 
 - **Anti-drift: every `step_id` must be real.** All `evidence_step_ids`, `failure_chain` steps, `supporting_step_ids`, etc. are validated against the global step set and filtered again in the presenter (`_clean_ids`). The responsible `agent` must be in the trajectory's raw agent names ∪ `config.SPECIAL_AGENTS`. `sub_phases` are deterministically re-tiled to cover each phase with no gaps (`presenter._tile_subphases`) — the LLM's sub-phase ranges are treated as hints, not truth.
 - **Output is byte-identical + exactly 4 injected top-level fields:** `llm_mistake_agent`, `llm_mistake_step` (int; `-1` = the `system_evaluation` pseudo-step), `llm_mistake_reason`, and `llm_analysis_summary`. The first three mirror the dataset's Who&When `mistake_*` slots; categories live **only** inside `llm_analysis_summary.root_cause`, never at top level. `tools/verify_diff.py` enforces this contract.
 - **`config.py` is the single source of truth** for paths, API config, all hyperparameters (segmentation sizes, token limits, temperatures), and the **taxonomy** (`CATEGORY_META`, `CATEGORY_MAIN_LABELS`, `CATEGORY_MAIN_PRIORITY`). `validator.py` and `presenter.py` derive their category enums from `CATEGORY_META` — never hard-code category codes elsewhere.
+- **Thinking mode is on by default** (`LLM_THINKING_ENABLED`, with `LLM_REASONING_EFFORT_*` sent via `extra_body` in `core/llm_client.py`). While thinking is enabled the `LLM_TEMPERATURE_*` constants are **inert** (the API ignores temperature) — tuning them has no effect unless you disable thinking. The client also strips `<think>` blocks from responses and exposes the chain-of-thought via `last_reasoning_content`.
 - **Prompts are the system prompts.** `prompts/local_summary.md`, `phase_aggregate.md`, `root_cause.md` are loaded lazily and sent verbatim as the system message. Changing the taxonomy or output schema means editing **both** `config.py` and the corresponding prompt file (and bumping `PROMPT_VERSIONS` / `SCHEMA_VERSION`).
 - `is_correct: true` trajectories are skipped (only failures are analyzed). Already-complete outputs are skipped on resume unless `--overwrite` (`io_writer.is_complete_v2`).
 

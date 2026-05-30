@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -140,6 +141,7 @@ class DeepSeekClient:
                 "(向后兼容:也接受 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL。)"
             )
         self.model = model
+        self._tls = threading.local()        # 每线程保存最近一次的 reasoning_content(供 --workers 下安全取用)
         self._client = OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -147,13 +149,25 @@ class DeepSeekClient:
             max_retries=0,
         )
 
+    @property
+    def last_reasoning_content(self) -> str:
+        """最近一次调用(本线程)返回的思维链;未开 thinking 或不支持时为空串。"""
+        return getattr(self._tls, "last_reasoning", "") or ""
+
     def chat(
         self,
         system: str,
         user: str,
         temperature: float = config.LLM_TEMPERATURE_DEFAULT,
         max_tokens: int = config.LLM_MAX_TOKENS_LOCAL,
+        reasoning_effort: Optional[str] = None,
     ) -> Tuple[str, str]:
+        # thinking 经 extra_body 传(兼容各 SDK 版本);effort 控推理强度。thinking 下 temperature 失效但传无害。
+        extra_body: Dict[str, Any] = {}
+        if config.LLM_THINKING_ENABLED:
+            extra_body["thinking"] = {"type": "enabled"}
+            if reasoning_effort:
+                extra_body["reasoning_effort"] = reasoning_effort
         last_exc: Optional[Exception] = None
         for attempt in range(config.LLM_MAX_RETRIES):
             try:
@@ -165,9 +179,14 @@ class DeepSeekClient:
                     ],
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    extra_body=extra_body,
                 )
                 choice = resp.choices[0]
                 text = choice.message.content or ""
+                reasoning = getattr(choice.message, "reasoning_content", None) or ""
+                self._tls.last_reasoning = reasoning
+                if reasoning:
+                    LOG.debug("reasoning_content len=%d (effort=%s)", len(reasoning), reasoning_effort)
                 finish = choice.finish_reason or "unknown"
                 return text, finish
             except Exception as e:
@@ -194,14 +213,19 @@ class DeepSeekClient:
         temperature: float = config.LLM_TEMPERATURE_DEFAULT,
         max_tokens: int = config.LLM_MAX_TOKENS_LOCAL,
         retry_on_length: bool = True,
+        reasoning_effort: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], str, str]:
-        """返回 (parsed_dict_or_None, raw_text, finish_reason)。"""
-        raw, finish = self.chat(system, user, temperature=temperature, max_tokens=max_tokens)
+        """返回 (parsed_dict_or_None, raw_text, finish_reason)。思维链可经 last_reasoning_content 取。"""
+        raw, finish = self.chat(
+            system, user, temperature=temperature, max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
         if finish == "length" and retry_on_length:
             LOG.warning("output truncated (length); retry with 2x max_tokens")
             raw, finish = self.chat(
                 system, user, temperature=temperature,
-                max_tokens=min(max_tokens * 2, 16384),
+                max_tokens=min(max_tokens * 2, 32768),
+                reasoning_effort=reasoning_effort,
             )
         parsed = parse_json_response(raw)
         return parsed, raw, finish

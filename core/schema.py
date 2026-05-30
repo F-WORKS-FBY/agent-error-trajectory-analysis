@@ -29,21 +29,6 @@ class Step:
     exit_code: Optional[int] = None
     verifier_signal: Optional[Literal["PASS", "FAIL"]] = None
 
-    def to_lite_dict(self) -> Dict[str, Any]:
-        """用于摘要 prompt 注入的瘦字段表示。"""
-        return {
-            "step_id": self.step_id,
-            "agent": self.agent_name_raw,
-            "agent_role": self.agent_normalized,
-            "action_type": self.action_type,
-            "exit_code": self.exit_code,
-            "verifier_signal": self.verifier_signal,
-            "content_head": self.content_head,
-            "content_tail": self.content_tail,
-            "content_len": self.content_len,
-            "step_hash": self.step_hash,
-        }
-
 
 # ----------------------------------------------------------------------------
 # Segment

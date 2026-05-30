@@ -30,7 +30,6 @@ SUPPORTED_BENCHMARKS = [
 # ----------------------------------------------------------------------------
 # LLM API (deepseek-v4-pro)
 # ----------------------------------------------------------------------------
-# 不要把 API key 写进代码(本仓库会上 GitHub)。只从环境变量读;缺失时实例化 client 才报错。
 # provider 中性命名 LLM_* 优先,保留 DEEPSEEK_* 作向后兼容别名。适配任意 OpenAI 兼容服务。
 LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
@@ -39,11 +38,19 @@ LLM_MODEL = os.environ.get("LLM_MODEL") or os.environ.get("DEEPSEEK_MODEL") or "
 LLM_TIMEOUT_SECONDS = 600
 LLM_MAX_RETRIES = 3
 LLM_RETRY_BACKOFF_BASE = 4.0
-LLM_TEMPERATURE_DEFAULT = 0.1            # 摘要 / 阶段聚合
-LLM_TEMPERATURE_ROOT = 0.0               # 根因判定
+# 注意:deepseek-v4-pro thinking 模式默认开启,thinking 下 temperature/top_p/惩罚项**全部失效**。
+# 下面两个温度仅作非思考回退保留,实际不再以温度声称确定性(见 LLM_THINKING_ENABLED)。
+LLM_TEMPERATURE_DEFAULT = 0.1            # (thinking 下失效) 摘要 / 阶段聚合
+LLM_TEMPERATURE_ROOT = 0.0              # (thinking 下失效) 根因判定
 LLM_MAX_TOKENS_LOCAL = 4000
 LLM_MAX_TOKENS_PHASE = 6000
-LLM_MAX_TOKENS_ROOT = 8000
+LLM_MAX_TOKENS_ROOT = 16000              # Round 6:思维链会占额度,调高以免挤掉最终 JSON 答案
+
+# Thinking / reasoning(deepseek-v4-pro)。经 extra_body 传,兼容各 SDK 版本。
+# effort:普通请求默认 high;根因这种复杂推理用 max。思维链经 reasoning_content 返回。
+LLM_THINKING_ENABLED = True
+LLM_REASONING_EFFORT_DEFAULT = "high"    # 局部摘要 / 阶段聚合
+LLM_REASONING_EFFORT_ROOT = "high"        # 根因判定(最强推理)--max过于慢，改为high
 
 # ----------------------------------------------------------------------------
 # Segmentation
@@ -56,13 +63,19 @@ SEG_MAX_STEPS = 80
 SEG_OVERLAP_STEPS = 5
 
 # ----------------------------------------------------------------------------
-# Step text truncation (写入 prompt / summary 时)
+# Step / task text 长度
 # ----------------------------------------------------------------------------
-STEP_HEAD_CHARS = 500
-STEP_TAIL_CHARS = 500
+# Round 6:不再裁内容。deepseek-v4-pro 百万上下文 ≫ 任何阈值(整条最大轨迹 ~175k token),
+# 一律向 prompt 发 content_full / 完整 question / 完整 verifier。只留一个极高安全帽防失控大 step。
+STEP_FULL_MAX_CHARS = 200_000   # 单步>20万字符才截(纯防御,正常 step 远低于此,几乎不触发)
+
+# 以下为旧"裁内容"常量,Round 6 起**不再用于裁 prompt 内容**;仅 STEP_HASH_* 仍用于指纹。
 STEP_HASH_HEAD_CHARS = 200
 STEP_HASH_TAIL_CHARS = 200
-
+# 兼容保留(step_enricher 仍据此算 content_head/tail 备查,但不再喂 prompt):
+STEP_HEAD_CHARS = 500
+STEP_TAIL_CHARS = 500
+# 兼容保留(已不再用于裁 task 文本):
 TASK_QUESTION_CHARS = 2000
 TASK_VERIFIER_CHARS = 1500
 ROOT_VERIFIER_CHARS = 10000
@@ -118,6 +131,6 @@ VERIFIER_RESULT_SET = frozenset({"PASS", "FAIL", "UNKNOWN"})
 PROMPT_VERSIONS = {
     "local": "1.0",
     "phase": "1.0",
-    "root": "1.0",
+    "root": "1.4",   # 1.4: 第三类计划缺陷(做法/数据源选错,违背任务明示要求→A2/C1)+ plan-vs-task 对照 + reason 证据绑定 + 全量不截断
 }
 SCHEMA_VERSION = "v2.0"

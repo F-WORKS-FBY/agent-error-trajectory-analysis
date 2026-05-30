@@ -12,7 +12,7 @@
 - `verifier_signal_seq`:本片段中验证器/终端的 PASS/FAIL 信号序列
 - `step_id_list`:本片段**合法的 step_id 集合**(数组),你输出的所有 step_ids 必须 ∈ 这个集合
 - `overlap_steps`:上一段尾部 N 步(仅用于上下文,不要把它们当作本段事件;它们的 step_id **不在** `step_id_list` 中,只是提供前情)
-- `segment_steps`:本片段所有步骤序列;每个步骤含 `step_id / agent / agent_role / action_type / exit_code / verifier_signal / content_head / content_tail / step_hash`
+- `segment_steps`:本片段所有步骤序列;每个步骤含 `step_id / agent / agent_role / action_type / exit_code / verifier_signal / content(完整正文,不截断) / content_len / step_hash`
 
 ## 输出要求(严格 JSON,无 markdown 围栏)
 

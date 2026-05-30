@@ -255,6 +255,15 @@ def _build_root_cause(ann: RootCauseAnnotation, da: Dict[str, Any], valid: Set[i
         "banner": ("LLM 对该轨迹根因不确定,请以人工判定为准"
                    if (ann.abstain or ann.needs_human_review) else ""),
     }
+    # 仅当根因被回溯到上游委派(执行者忠实实现)时,透出溯源依据,方便标注员理解"为何怪 planner 而非执行者"。
+    dt = da.get("delegation_trace")
+    if isinstance(dt, dict) and dt.get("is_faithful_implementation"):
+        rc["delegation_trace"] = {
+            "is_faithful_implementation": True,
+            "prescribed_by_step": str(dt.get("prescribed_by_step", "") or ""),
+            "quote": str(dt.get("quote", "") or ""),
+            "defect_in_quote": bool(dt.get("defect_in_quote", False)),
+        }
     return rc
 
 
@@ -348,6 +357,12 @@ def _render_root_cause_md(rc: Dict[str, Any]) -> str:
     L.append(f"- **责任 agent**: {rc['agent']}    **决定性 step**: {step}")
     L.append(f"- **主因**: {pc_s}    **次因**: {cf_s}")
     L.append(f"- **原因**: {rc['reason']}")
+    dt = rc.get("delegation_trace")
+    if isinstance(dt, dict) and dt.get("is_faithful_implementation"):
+        pby = dt.get("prescribed_by_step", "")
+        pby_s = f"[#{pby}]" if str(pby).isdigit() else str(pby)
+        L.append(f"- **委派溯源**: 执行者忠实实现了 {pby_s} 委派里的缺陷,故根因归该委派步"
+                 + (f";被照搬原话:「{dt['quote']}」" if dt.get("quote") else ""))
     if rc.get("failure_chain"):
         L.append("- **失败链**(区分最初根因 vs 失败显露处):")
         role_zh = {"root_cause": "根因", "propagation": "传播", "exposure": "显露", "terminal": "终态"}

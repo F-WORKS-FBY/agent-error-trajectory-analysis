@@ -211,7 +211,7 @@ def process_one(
         global_step_ids=step_id_set,
         valid_agents_raw=valid_agents_raw,
     )
-    ok, errs = validate_root_cause(ann, step_id_set, set(valid_agents_raw))
+    ok, errs = validate_root_cause(ann, step_id_set, set(valid_agents_raw), all_steps=steps)
     if not ok:
         LOG.warning("root_cause validate fail: %s", "; ".join(errs[:3]))
         ann = diagnose_root_cause(
@@ -220,10 +220,10 @@ def process_one(
             valid_agents_raw=valid_agents_raw,
             previous_errors=errs,
         )
-        ok2, errs2 = validate_root_cause(ann, step_id_set, set(valid_agents_raw))
+        ok2, errs2 = validate_root_cause(ann, step_id_set, set(valid_agents_raw), all_steps=steps)
         if not ok2:
             LOG.warning("root_cause still invalid after retry: %s", "; ".join(errs2[:3]))
-            ann = coerce_root_cause(ann, step_id_set, set(valid_agents_raw))
+            ann = coerce_root_cause(ann, step_id_set, set(valid_agents_raw), all_steps=steps)
             ann.needs_human_review = True
             # 关键字段实在缺时:abstain 兜底
             if not ann.agent or not ann.step or not ann.primary_category:

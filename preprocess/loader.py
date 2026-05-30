@@ -68,24 +68,22 @@ def build_task_brief(data: Dict[str, Any], src_name: str = "") -> str:
     parts.append(f"task: {task}")
     parts.append(f"is_correct: {data.get('is_correct')}")
 
+    # Round 6:不裁内容,完整发(百万上下文足够)。决定性的任务要求/示例/接口规范常在 question 后段。
     q = data.get("question") or ""
     if isinstance(q, str) and q:
-        parts.append(f"question (head {config.TASK_QUESTION_CHARS} chars):\n{q[:config.TASK_QUESTION_CHARS]}")
+        parts.append(f"question (完整):\n{q}")
 
     vo = data.get("verifier_output") or ""
     if isinstance(vo, str) and vo:
-        parts.append(
-            f"verifier_output (head {config.TASK_VERIFIER_CHARS} chars):\n"
-            f"{vo[:config.TASK_VERIFIER_CHARS]}"
-        )
+        parts.append(f"verifier_output (完整):\n{vo}")
 
     rt = data.get("runtime_errors")
     if rt:
-        parts.append(f"runtime_errors: {json.dumps(rt, ensure_ascii=False)[:1500]}")
+        parts.append(f"runtime_errors: {json.dumps(rt, ensure_ascii=False)}")
 
     if isinstance(gt, str) and gt:
-        parts.append(f"ground_truth (head 1000 chars):\n{gt[:1000]}")
+        parts.append(f"ground_truth (完整):\n{gt}")
     elif isinstance(gt, dict) and gt:
-        parts.append(f"ground_truth (期望/约束):\n{json.dumps(gt, ensure_ascii=False)[:1500]}")
+        parts.append(f"ground_truth (期望/约束):\n{json.dumps(gt, ensure_ascii=False)}")
 
     return "\n\n".join(parts)
