@@ -1,0 +1,10 @@
+# 运行时产物
+logs/
+__pycache__/
+*.pyc
+
+# 密钥 / 本地环境
+.env
+
+# 输出(默认输出目录;他人用 --output-dir 自定义时自行忽略)
+*.debug.json

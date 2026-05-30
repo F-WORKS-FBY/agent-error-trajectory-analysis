@@ -1,0 +1,2 @@
+# LLM 客户端(OpenAI 兼容,用于调用 DeepSeek / 任意兼容服务)
+openai>=1.0.0

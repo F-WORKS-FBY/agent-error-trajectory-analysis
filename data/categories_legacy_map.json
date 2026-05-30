@@ -1,0 +1,78 @@
+{
+  "_meta": {
+    "purpose": "taxonomy migration maps. CURRENT taxonomy = new_codes (5 主类 13 叶 + 兜底类 X, single primary + optional contributing). 旧的 legacy 10-class 和 v2 17-class 仅保留做历史标注回填/审计。",
+    "schema_version": "v3.0",
+    "current_taxonomy": "new_codes"
+  },
+
+  "new_codes": {
+    "A1_misunderstood_task":            {"main": "A", "zh": "误解任务/意图"},
+    "A2_ignored_constraint":            {"main": "A", "zh": "无视约束"},
+    "A3_misread_observation":           {"main": "A", "zh": "误读工具/终端结果"},
+    "B1_hallucination":                 {"main": "B", "zh": "幻觉编造"},
+    "B2_flawed_reasoning":              {"main": "B", "zh": "推理错误"},
+    "C1_flawed_plan":                   {"main": "C", "zh": "计划缺陷"},
+    "C2_wrong_handoff_or_role":         {"main": "C", "zh": "错误委派/角色"},
+    "C3_context_or_state_loss":         {"main": "C", "zh": "上下文/状态丢失"},
+    "D1_wrong_tool_or_args":            {"main": "D", "zh": "选错工具/参数"},
+    "D2_unrecovered_tool_failure":      {"main": "D", "zh": "工具失败未恢复"},
+    "D3_stuck_or_repetition":           {"main": "D", "zh": "重复/卡死"},
+    "E1_verification_gap":              {"main": "E", "zh": "验证缺失/误判"},
+    "E2_premature_or_wrong_completion": {"main": "E", "zh": "提前/错误完成"},
+    "X1_underspecified_input":          {"main": "X", "zh": "输入欠定"},
+    "X2_unrecoverable_environment":     {"main": "X", "zh": "环境不可恢复"}
+  },
+  "main_labels": {
+    "A": "理解输入", "B": "认知推理", "C": "规划协作",
+    "D": "执行工具", "E": "验证收尾", "X": "非Agent责任"
+  },
+
+  "legacy10_to_new": {
+    "wrong_tool_arg": "D1_wrong_tool_or_args",
+    "ignored_constraint": "A2_ignored_constraint",
+    "hallucinated_fact": "B1_hallucination",
+    "wrong_handoff": "C2_wrong_handoff_or_role",
+    "premature_completion": "E2_premature_or_wrong_completion",
+    "misread_tool_result": "A3_misread_observation",
+    "planning_error": "C1_flawed_plan",
+    "verification_oversight": "E1_verification_gap",
+    "tool_failure": "D2_unrecovered_tool_failure",
+    "unclear_instruction": "X1_underspecified_input"
+  },
+
+  "v2_17_to_new": {
+    "A1_intent_misread": "A1_misunderstood_task",
+    "A2_planning_flaw": "C1_flawed_plan",
+    "A3_constraint_violation": "A2_ignored_constraint",
+    "B1_hallucination": "B1_hallucination",
+    "B2_observation_misread": "A3_misread_observation",
+    "B3_reasoning_error": "B2_flawed_reasoning",
+    "C1_wrong_tool_or_action": "D1_wrong_tool_or_args",
+    "C2_wrong_arguments": "D1_wrong_tool_or_args",
+    "C3_tool_failure": "D2_unrecovered_tool_failure",
+    "D1_wrong_handoff": "C2_wrong_handoff_or_role",
+    "D2_communication_loss": "C3_context_or_state_loss",
+    "D3_state_inconsistency": "C3_context_or_state_loss",
+    "E1_verification_oversight": "E1_verification_gap",
+    "E2_premature_completion": "E2_premature_or_wrong_completion",
+    "E3_loop_or_stuck": "D3_stuck_or_repetition",
+    "F1_unrecoverable_environment": "X2_unrecoverable_environment",
+    "F2_underspecified_input": "X1_underspecified_input"
+  },
+
+  "_legacy_audit": {
+    "comment": "以下为历史词表定义,仅供审计,不再作为当前标注词表。",
+    "legacy_to_v2": {
+      "wrong_tool_arg": ["C2_wrong_arguments"],
+      "ignored_constraint": ["A3_constraint_violation"],
+      "hallucinated_fact": ["B1_hallucination"],
+      "wrong_handoff": ["D1_wrong_handoff"],
+      "premature_completion": ["E2_premature_completion"],
+      "misread_tool_result": ["B2_observation_misread"],
+      "planning_error": ["A2_planning_flaw", "A1_intent_misread"],
+      "verification_oversight": ["E1_verification_oversight"],
+      "tool_failure": ["C3_tool_failure"],
+      "unclear_instruction": ["F2_underspecified_input", "A1_intent_misread"]
+    }
+  }
+}
