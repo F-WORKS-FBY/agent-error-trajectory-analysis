@@ -83,7 +83,9 @@ def summarize_segment(
         system=system, user=user,
         temperature=config.LLM_TEMPERATURE_DEFAULT,
         max_tokens=config.LLM_MAX_TOKENS_LOCAL,
-        reasoning_effort=config.LLM_REASONING_EFFORT_DEFAULT,
+        reasoning_effort=config.LLM_REASONING_EFFORT_LOCAL,
+        thinking=config.LLM_THINKING_LOCAL,
+        stage="local",
     )
     ls = LocalSummary(
         segment_id=seg.segment_id,

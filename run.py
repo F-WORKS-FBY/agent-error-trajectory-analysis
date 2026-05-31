@@ -333,6 +333,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                            args.dry_run, debug_sidecar=args.debug_sidecar)
 
     stats: Dict[str, int] = {}
+    total = len(files)
+    done = 0
+    blabel = bench_label or "flat"
+    # 进度行:[bench done/total status | filename]。done/total 让运行的 pane 直接看到本 bench 跑了多少。
+    # (两个循环体都在主线程跑 —— workers>1 时 as_completed 也在主线程 yield —— 故 done 计数无需加锁。)
     if args.workers <= 1:
         for p in files:
             try:
@@ -341,7 +346,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 LOG.exception("file %s failed: %s", p.name, e)
                 status = f"error:{type(e).__name__}"
             stats[status] = stats.get(status, 0) + 1
-            LOG.info("[%s] %s", status, p.name)
+            done += 1
+            LOG.info("[%s %d/%d] %s | %s", blabel, done, total, status, p.name)
             if _shutdown_event.is_set():
                 LOG.warning("shutdown requested, stopping after current file")
                 break
@@ -356,7 +362,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     LOG.exception("file %s failed: %s", p.name, e)
                     status = f"error:{type(e).__name__}"
                 stats[status] = stats.get(status, 0) + 1
-                LOG.info("[%s] %s", status, p.name)
+                done += 1
+                LOG.info("[%s %d/%d] %s | %s", blabel, done, total, status, p.name)
                 if _shutdown_event.is_set():
                     break
 

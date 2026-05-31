@@ -123,7 +123,7 @@ python -m MAS_trajectory_analysis.run --input-dir /path/to/your_bench --dry-run 
 | `D3_stuck_or_repetition` | D | 重复/卡死 | 原地打转无进展 |
 | `E1_verification_gap` | E 验证收尾 | 验证缺失/误判 | 漏验/验错 |
 | `E2_premature_or_wrong_completion` | E | 提前/错误完成 | 没达成就 finish |
-| `X1_underspecified_input` | X 非Agent | 输入欠定 | 锅在输入 |
+| `X1_underspecified_input` | X 非Agent | 输入欠定/自相矛盾 | 锅在输入(信息不足 或 约束互相矛盾/无解)|
 | `X2_unrecoverable_environment` | X | 环境不可恢复 | 锅在环境(慎用) |
 
 **多因共存**:`primary_category` 单选(决定性错误那一类);因果链下游进 `failure_chain` 不进类别;真正独立并存的次因才进 `contributing_factors`。同一步像两类时上游优先 `A>B>C>D>E`。

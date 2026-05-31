@@ -83,7 +83,9 @@ def aggregate_phases(
         system=system, user=user,
         temperature=config.LLM_TEMPERATURE_DEFAULT,
         max_tokens=config.LLM_MAX_TOKENS_PHASE,
-        reasoning_effort=config.LLM_REASONING_EFFORT_DEFAULT,
+        reasoning_effort=config.LLM_REASONING_EFFORT_PHASE,
+        thinking=config.LLM_THINKING_PHASE,
+        stage="phase",
     )
     ps = PhaseSummary(raw_text=raw)
     if parsed is None:
@@ -377,6 +379,8 @@ def diagnose_root_cause(
         temperature=config.LLM_TEMPERATURE_ROOT,
         max_tokens=config.LLM_MAX_TOKENS_ROOT,
         reasoning_effort=config.LLM_REASONING_EFFORT_ROOT,
+        thinking=config.LLM_THINKING_ROOT,
+        stage="root",
     )
     reasoning_trace = client.last_reasoning_content     # 思维链(仅供 debug sidecar 审计)
     ann = RootCauseAnnotation(raw_text=raw)

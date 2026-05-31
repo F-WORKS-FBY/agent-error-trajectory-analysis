@@ -80,12 +80,13 @@
    - **failed safeguard(失效屏障)不是根因**:verifier 漏检、没人复查 = 它没"引入"错误,只是没挡住。归 `contributing_factors`(`E1_verification_gap`),不当 primary。
    - **faithful implementation(忠实实现)不是根因**:执行者一字不差实现了上游有缺陷的计划/委派 = 缺陷不是它引入的。该步在 `failure_chain` 里标 `propagation`,根因归上游 planner。
 3. **最早反事实**:在所有候选根因里,选**最早的、纠正它就能翻盘**的那个作 `primary` + 责任 agent/step。
+   - **反事实硬验(必做,别想当然)**:把候选根因步**单独纠正**后,任务**真的能 reward→1 吗**?——**不要**假设"换个计划就成了";要对着 `verifier_output` 的 required tests 实际推演。若该步只是**忠实转抄任务明示需求**,而该需求与**官方不可变测试**(`verifier_output` 跑的 required tests)**逻辑上不可兼得**(改了它就违反需求、不改就挂测试,且任务禁改测试)→ **纠正它也翻不了盘** → 这步**没资格当 root**(连"纠正就翻盘"都不满足),根因是**任务自相矛盾** → 判 `X1_underspecified_input`(见 §5.y),**严禁**误判成 planner 的 `C1_flawed_plan`。
 
 ### 判定表(多 agent 常见复杂情形)
 
 | 情形 | 根因 agent / step / `primary_category` | failure_chain / `contributing_factors` |
 |---|---|---|
-| 执行者**忠实实现**了委派/计划里的缺陷 | planner 的**委派步**,agent 用**委派态名**,`C1_flawed_plan` | 执行步 = `propagation` |
+| 执行者**忠实实现**了委派/计划里的缺陷 | planner 的**委派步**,agent 用**委派态名**,`C1_flawed_plan`<br>⚠ **选 C1 前先过反事实硬验**(见上 §2.3.3):若该"缺陷"只是忠实**转抄任务明示需求**、且与官方不可变测试**不可兼得**(纠正计划也翻不了盘)→ **不是 C1,是 `X1`**(根因=任务自相矛盾,见 §5.y);"计划没考虑测试兼容性"在**无解**任务里**不构成** planner 之过 | 执行步 = `propagation` |
 | 执行者**独立**犯错(计划本身没问题) + verifier 漏检 | **执行者**步(按错误类型选 B/C/D...) | verifier 漏检 = `contributing_factors:[E1_verification_gap]`(失效屏障,非根因) |
 | 计划对、执行对,verifier **误判 PASS 放行**(本应拦截) | **verifier** 步,`E1_verification_gap` | — |
 | verifier **误判 FAIL 一个正确解** → 返工/放弃 | **verifier** 步,`E1_verification_gap` | 由此引发的循环 = `propagation` |
@@ -94,6 +95,8 @@
 | 早期可恢复小错 → 后续某步使其**不可恢复** | **不可恢复点**(见 §2.1) | 早期小错 = 非根因 |
 
 > 一句话:**root = 最早**引入**缺陷的步**;忠实实现 = propagation;失效屏障(漏检)= contributing;都不是 root。
+
+> **再加一问(忠实实现别停在 planner)**:若 planner 的委派/计划只是**逐字转抄了任务 `question` 里的明示需求**,而该需求本身与一条**官方不可变测试/硬约束**不可兼得(没有任何实现能同时满足)→ 缺陷在**任务输入**、不在 planner。此时**不要**判 `C1_flawed_plan`,转 §5.y 判 `X1_underspecified_input`。
 
 ---
 
@@ -162,7 +165,7 @@
 - **`E2_premature_or_wrong_completion`(提前/错误完成)** — 未真正达成目标即 `finish()` / 把局部或表面成功当整体完成 / 提前终止 / 不知道何时该停
 
 **X. 非 Agent 责任**(兜底,慎用) — 锅不在 agent
-- **`X1_underspecified_input`(输入欠定)** — 用户/任务输入信息不足以唯一完成,**且 agent 也无法通过合理探索补全**
+- **`X1_underspecified_input`(输入欠定**或自相矛盾**)** — 任务输入本身有病,使**没有任何合规实现能成功**,且 agent 无法靠合理探索补救。涵盖两类:① **欠定/under-constrained**(信息不足以唯一确定解);② **自相矛盾/过定/over-constrained**(多个明示约束互相冲突、不可兼得,如需求与官方免改测试要求相反 → 见 §5.y)。两类都是"锅在输入",共用本 code。
 - **`X2_unrecoverable_environment`(环境不可恢复)** — **真正不可恢复**的外部环境/平台失败(沙盒永久崩溃、必需服务彻底不可用、任务上下文明确禁止 agent 修改环境)
 
 ### 5.2 多因共存怎么办(关键:别把沾边的都塞进来)
@@ -193,6 +196,30 @@
 | 沙盒永久崩溃 / OOM kill | — | `X2_unrecoverable_environment` |
 
 **在选 `X2_unrecoverable_environment` 或 `D2_unrecovered_tool_failure` 前,必须先问"任务上下文是否允许或预期 agent 自己解决这个问题?"** 若允许而 agent 没解决,根因应归到 A/B/D3/E 中。`X2` 仅用于 agent 客观上无路可走的极端情况。
+
+### 5.y 需求与官方测试自相矛盾 → X1(不是 C1)
+
+SWE-bench-pro 这类任务偶有**任务需求与官方测试逻辑上不可兼得**:planner/executor 即便完全照做也注定 reward=0。这不是任一 agent 的错,是**任务输入自相矛盾**。
+
+**第一步,必须区分两种「测试」(只认第一种作硬约束):**
+1. **官方不可变测试** —— 仅指:**最终评分器 `verifier_output` 实际运行的那批(required tests)**,以及任务 `question` 里点名、且**明令"不准改"的仓库测试文件**。
+2. **agent 自己在轨迹里写/跑的测试** —— inline `python -c "assert ..."`、临时脚本、某 agent 为自检造的用例。**自编的,不是官方约束**;它失败往往只反映该 agent 自己的误解。
+> ⚠ per-step 的 PASS/FAIL 信号把这两类**混在一起**(`Computer_terminal` 回显 agent 自跑脚本也会标 FAIL),**不可单凭它判 X1**。**判 X1 必须落到 `verifier_output` 原文**——它才是官方 required tests 的结果。
+
+**判定 `X1_underspecified_input`(须同时满足,且证据双引用):**
+- 能从 `question` **引用**一条明示需求(如"函数签名必须改成 X");
+- 能从 `verifier_output` / 官方不可变测试**引用**一条与之**逻辑冲突**的要求(如官方测试仍按旧接口调用、期望旧语义);
+- 二者**没有任何实现能同时满足**,且任务**禁止修改**那条官方测试;
+- planner/executor 只是忠实执行了该需求。
+
+→ `primary_category=X1_underspecified_input`;`agent=USER_INTENT_UNDERSPECIFIED`(或矛盾所在任务消息步的 `human`,若其 ∈ `valid_agents`);`step=` 矛盾最早出现处(通常即任务描述那一步);`failure_chain`:root=矛盾步、planner/executor 实现步=propagation、官方测试失败=exposure、`system_evaluation`=terminal。
+
+**反向闸(防滥用 X1):**
+- "矛盾"只存在于**某 agent 自写测试** vs 需求、而 `verifier_output` 未把该测试列为 required → **不判 X1**,按执行/推理错误归类。
+- planner 的缺陷是它**自己引入**的(选错数据源/漏步/错序),非任务需求强加 → 仍是 `C1_flawed_plan`,**别误转 X1**。
+- X1 是"非 agent 责任"兜底,**证据必须落到 `question` 原文 + `verifier_output` 原文两处引用**;引不出这两处,不准判 X1。
+
+> 一句话:**需求(question)与官方测试(verifier_output)自相矛盾、谁实现都得死 = X1**;agent 自写测试的失败、planner 自己的计划错 ≠ X1。
 
 ---
 

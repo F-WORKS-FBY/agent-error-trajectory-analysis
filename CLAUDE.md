@@ -33,7 +33,25 @@ python -m MAS_trajectory_analysis.run --benchmark swe_bench_pro --file some.json
 python -m MAS_trajectory_analysis.tools.verify_diff --benchmark swe_bench_pro
 ```
 
-There is **no test suite and no linter config**. `--dry-run` is the fast sanity check (exercises preprocessing/segmentation without spending API tokens); `tools/verify_diff.py` is the output-integrity check. Default input/output paths resolve to the repo's `Who&When_style/<bench>/` and `Who&When_style/MAS_trajectory_analysis/<bench>/` (see `config.py`).
+### Batch runs & monitoring
+
+The shell scripts are the normal way to run a real (non-smoke) job. They `source` the sibling `.env` themselves, resolve paths regardless of CWD, support resume (re-run = skip-completed), and **default to a different data root than `config.py`** — `CNIC/zhangyunfei/{data,llm_analysis}` instead of `Who&When_style/` (override with `DATA_DIR=` / `OUT_DIR=`).
+
+```bash
+./run_swe.sh                              # just swe_bench_pro (pre-flight quality check before a big run)
+WORKERS=10 ./run_all_benches.sh           # all 5 benches; resume-safe (re-run to continue after a crash)
+OVERWRITE=1 WORKERS=10 ./run_all_benches.sh   # ONLY for a prompt change — full recompute (drop OVERWRITE on resume!)
+LIMIT=3 ./run_all_benches.sh swe_bench_pro     # env knobs: WORKERS / OVERWRITE / DEBUG_SIDECAR / LIMIT / DATA_DIR / OUT_DIR
+
+# global progress across all benches (run in a SECOND terminal during a long job)
+python -m MAS_trajectory_analysis.tools.progress --watch 30   # done/total per bench by counting output files
+
+# per-stage thinking benchmark: runs 4 anchor trajectories with known-correct root causes,
+# asserts no regression, and reports latency + token cost per stage (writes to a scratch dir)
+python -m MAS_trajectory_analysis.tools.bench_thinking
+```
+
+There is **no test suite and no linter config**. `--dry-run` is the fast sanity check (exercises preprocessing/segmentation without spending API tokens); `tools/verify_diff.py` is the output-integrity check; `tools/bench_thinking.py` is the closest thing to a regression test (4 hard-coded anchor cases). Default `--input-dir`/`--output-dir` resolve to the repo's `Who&When_style/<bench>/` and `Who&When_style/MAS_trajectory_analysis/<bench>/` (see `config.py`), but the batch scripts point elsewhere (above).
 
 ## Pipeline architecture
 
@@ -51,7 +69,7 @@ There is **no test suite and no linter config**. `--dry-run` is the fast sanity 
 - **Anti-drift: every `step_id` must be real.** All `evidence_step_ids`, `failure_chain` steps, `supporting_step_ids`, etc. are validated against the global step set and filtered again in the presenter (`_clean_ids`). The responsible `agent` must be in the trajectory's raw agent names ∪ `config.SPECIAL_AGENTS`. `sub_phases` are deterministically re-tiled to cover each phase with no gaps (`presenter._tile_subphases`) — the LLM's sub-phase ranges are treated as hints, not truth.
 - **Output is byte-identical + exactly 4 injected top-level fields:** `llm_mistake_agent`, `llm_mistake_step` (int; `-1` = the `system_evaluation` pseudo-step), `llm_mistake_reason`, and `llm_analysis_summary`. The first three mirror the dataset's Who&When `mistake_*` slots; categories live **only** inside `llm_analysis_summary.root_cause`, never at top level. `tools/verify_diff.py` enforces this contract.
 - **`config.py` is the single source of truth** for paths, API config, all hyperparameters (segmentation sizes, token limits, temperatures), and the **taxonomy** (`CATEGORY_META`, `CATEGORY_MAIN_LABELS`, `CATEGORY_MAIN_PRIORITY`). `validator.py` and `presenter.py` derive their category enums from `CATEGORY_META` — never hard-code category codes elsewhere.
-- **Thinking mode is on by default** (`LLM_THINKING_ENABLED`, with `LLM_REASONING_EFFORT_*` sent via `extra_body` in `core/llm_client.py`). While thinking is enabled the `LLM_TEMPERATURE_*` constants are **inert** (the API ignores temperature) — tuning them has no effect unless you disable thinking. The client also strips `<think>` blocks from responses and exposes the chain-of-thought via `last_reasoning_content`.
+- **Thinking is configured per stage, not globally** (sent via `extra_body` in `core/llm_client.py`; `LLM_THINKING_ENABLED` is only the fallback for calls that don't pass an explicit `thinking=`). As of Round 7: Stage 2 local summary has thinking **off** (`LLM_THINKING_LOCAL=False` — it's an extraction task and ~84% of all calls, so this is the main speed/cost lever), while Stages 3/4 (phase, root cause) run thinking on. **Temperature is inert only while thinking is on** — so `LLM_TEMPERATURE_DEFAULT=0.1` is actually live for Stage 2 now, but the root-cause temperature stays inert. When tuning a stage, change *that stage's* `LLM_THINKING_*`/`LLM_REASONING_EFFORT_*` pair. The client strips `<think>` blocks from responses and exposes the chain-of-thought via `last_reasoning_content`; per-call token/latency is recorded to `last_usage` and (if a `metrics_sink` list is attached) appended there — that's how `bench_thinking.py` measures cost.
 - **Prompts are the system prompts.** `prompts/local_summary.md`, `phase_aggregate.md`, `root_cause.md` are loaded lazily and sent verbatim as the system message. Changing the taxonomy or output schema means editing **both** `config.py` and the corresponding prompt file (and bumping `PROMPT_VERSIONS` / `SCHEMA_VERSION`).
 - `is_correct: true` trajectories are skipped (only failures are analyzed). Already-complete outputs are skipped on resume unless `--overwrite` (`io_writer.is_complete_v2`).
 

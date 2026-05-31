@@ -42,15 +42,29 @@ LLM_RETRY_BACKOFF_BASE = 4.0
 # 下面两个温度仅作非思考回退保留,实际不再以温度声称确定性(见 LLM_THINKING_ENABLED)。
 LLM_TEMPERATURE_DEFAULT = 0.1            # (thinking 下失效) 摘要 / 阶段聚合
 LLM_TEMPERATURE_ROOT = 0.0              # (thinking 下失效) 根因判定
-LLM_MAX_TOKENS_LOCAL = 4000
-LLM_MAX_TOKENS_PHASE = 6000
-LLM_MAX_TOKENS_ROOT = 16000              # Round 6:思维链会占额度,调高以免挤掉最终 JSON 答案
+LLM_MAX_TOKENS_LOCAL = 10000
+LLM_MAX_TOKENS_PHASE = 20000
+LLM_MAX_TOKENS_ROOT = 32000              # root:thinking 链 + 最终 JSON 共用输出额度,设到 API 上限附近,
+                                         # 第一次就写得完 → 不触发 length 重试(重试会重发整个输入,翻倍浪费)
 
 # Thinking / reasoning(deepseek-v4-pro)。经 extra_body 传,兼容各 SDK 版本。
-# effort:普通请求默认 high;根因这种复杂推理用 max。思维链经 reasoning_content 返回。
-LLM_THINKING_ENABLED = True
-LLM_REASONING_EFFORT_DEFAULT = "high"    # 局部摘要 / 阶段聚合
-LLM_REASONING_EFFORT_ROOT = "high"        # 根因判定(最强推理)--max过于慢，改为high
+# 思维链经 reasoning_content 返回;thinking 开启时 temperature/top_p/惩罚项全部失效。
+#
+# 按 stage 细分(任务复杂度差异大):
+#   - Stage 2 局部摘要 = 抽取型简单任务,但调用量最大(N 段=N 次)→ **关 thinking** 省时省 token
+#     (thinking 关时 temperature 重新生效,抽取更稳定)。
+#   - Stage 3 阶段聚合 = 结构化归并 → 开 thinking,effort=high。
+#   - Stage 4 根因判定 = 唯一需要深度因果推理(去偏逻辑全在此)→ 开 thinking,effort=max。
+# llm_client.chat() 按 per-call `thinking`/`reasoning_effort` 决定(覆盖下面的全局回退)。
+LLM_THINKING_ENABLED = True              # 全局回退默认(未显式指定 thinking 的调用沿用它)
+LLM_REASONING_EFFORT_DEFAULT = "high"    # 全局回退默认 effort(向后兼容)
+
+LLM_THINKING_LOCAL = False              # Stage 2 局部摘要:关 thinking(抽取型简单任务,占 84% 调用/成本,
+LLM_REASONING_EFFORT_LOCAL = None       #   关后单文件耗时≈1/4;thinking 关 → effort 不读、temperature=0.1 重新生效)
+LLM_THINKING_PHASE = True                # Stage 3 阶段聚合:开
+LLM_REASONING_EFFORT_PHASE = "high"
+LLM_THINKING_ROOT = True                 # Stage 4 根因判定:开
+LLM_REASONING_EFFORT_ROOT = "high"       
 
 # ----------------------------------------------------------------------------
 # Segmentation
@@ -99,7 +113,7 @@ CATEGORY_META: dict = {
     "D3_stuck_or_repetition":           {"main": "D", "zh": "重复/卡死"},
     "E1_verification_gap":              {"main": "E", "zh": "验证缺失/误判"},
     "E2_premature_or_wrong_completion": {"main": "E", "zh": "提前/错误完成"},
-    "X1_underspecified_input":          {"main": "X", "zh": "输入欠定"},
+    "X1_underspecified_input":          {"main": "X", "zh": "输入欠定/自相矛盾"},
     "X2_unrecoverable_environment":     {"main": "X", "zh": "环境不可恢复"},
 }
 # 6 大类(含兜底类 X)中文名,供两级选择器/展示用
@@ -131,6 +145,7 @@ VERIFIER_RESULT_SET = frozenset({"PASS", "FAIL", "UNKNOWN"})
 PROMPT_VERSIONS = {
     "local": "1.0",
     "phase": "1.0",
-    "root": "1.4",   # 1.4: 第三类计划缺陷(做法/数据源选错,违背任务明示要求→A2/C1)+ plan-vs-task 对照 + reason 证据绑定 + 全量不截断
+    "root": "1.5",   # 1.5: 需求↔官方测试矛盾→X1(非C1):§2.3.3 反事实硬验(纠正也翻不了盘→没资格当root)+ 判定表"忠实实现→C1"行内闸 + §5.y 详则(区分官方不可变测试 vs agent自写测试);X1 拓宽=输入欠定**或自相矛盾/过定**
+                     # 1.4: 第三类计划缺陷(做法/数据源选错,违背任务明示要求→A2/C1)+ plan-vs-task 对照 + reason 证据绑定 + 全量不截断
 }
 SCHEMA_VERSION = "v2.0"

@@ -87,6 +87,26 @@ def _repair_illegal_backslashes(text: str) -> str:
     return "".join(out)
 
 
+def _extract_usage(usage: Any) -> Dict[str, Optional[int]]:
+    """防御式从 OpenAI 兼容 response.usage 取 token 数(各 provider 字段略有差异)。"""
+    if usage is None:
+        return {"prompt_tokens": None, "completion_tokens": None,
+                "reasoning_tokens": None, "total_tokens": None}
+    pt = getattr(usage, "prompt_tokens", None)
+    ct = getattr(usage, "completion_tokens", None)
+    tt = getattr(usage, "total_tokens", None)
+    rt = None
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is not None:
+        rt = getattr(details, "reasoning_tokens", None)
+        if rt is None and isinstance(details, dict):
+            rt = details.get("reasoning_tokens")
+    if rt is None:
+        rt = getattr(usage, "reasoning_tokens", None)
+    return {"prompt_tokens": pt, "completion_tokens": ct,
+            "reasoning_tokens": rt, "total_tokens": tt}
+
+
 def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
     """同 v1 _parse_llm_output。返回 dict 或 None。"""
     text = (raw or "").strip()
@@ -141,7 +161,10 @@ class DeepSeekClient:
                 "(向后兼容:也接受 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL。)"
             )
         self.model = model
-        self._tls = threading.local()        # 每线程保存最近一次的 reasoning_content(供 --workers 下安全取用)
+        self._tls = threading.local()        # 每线程保存最近一次的 reasoning_content / usage(供 --workers 下安全取用)
+        # 可选的指标接收器:设为 list 后,每次调用会 append 一条 {stage, latency_s, *_tokens} 记录。
+        # 默认 None → 生产路径零开销、无内存泄漏;基准/审计时由调用方临时挂上。
+        self.metrics_sink: Optional[list] = None
         self._client = OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -154,6 +177,11 @@ class DeepSeekClient:
         """最近一次调用(本线程)返回的思维链;未开 thinking 或不支持时为空串。"""
         return getattr(self._tls, "last_reasoning", "") or ""
 
+    @property
+    def last_usage(self) -> Dict[str, Any]:
+        """最近一次调用(本线程)的 token/latency 记录;无则空 dict。"""
+        return getattr(self._tls, "last_usage", None) or {}
+
     def chat(
         self,
         system: str,
@@ -161,16 +189,23 @@ class DeepSeekClient:
         temperature: float = config.LLM_TEMPERATURE_DEFAULT,
         max_tokens: int = config.LLM_MAX_TOKENS_LOCAL,
         reasoning_effort: Optional[str] = None,
+        thinking: Optional[bool] = None,
+        stage: Optional[str] = None,
     ) -> Tuple[str, str]:
-        # thinking 经 extra_body 传(兼容各 SDK 版本);effort 控推理强度。thinking 下 temperature 失效但传无害。
+        # thinking 经 extra_body 传(兼容各 SDK 版本);effort 控推理强度。
+        # per-call `thinking` 覆盖全局 LLM_THINKING_ENABLED;关时显式发 disabled(deepseek 默认开)。
+        thinking_on = config.LLM_THINKING_ENABLED if thinking is None else thinking
         extra_body: Dict[str, Any] = {}
-        if config.LLM_THINKING_ENABLED:
+        if thinking_on:
             extra_body["thinking"] = {"type": "enabled"}
             if reasoning_effort:
                 extra_body["reasoning_effort"] = reasoning_effort
+        else:
+            extra_body["thinking"] = {"type": "disabled"}
         last_exc: Optional[Exception] = None
         for attempt in range(config.LLM_MAX_RETRIES):
             try:
+                t0 = time.perf_counter()
                 resp = self._client.chat.completions.create(
                     model=self.model,
                     messages=[
@@ -181,6 +216,7 @@ class DeepSeekClient:
                     max_tokens=max_tokens,
                     extra_body=extra_body,
                 )
+                latency_s = time.perf_counter() - t0
                 choice = resp.choices[0]
                 text = choice.message.content or ""
                 reasoning = getattr(choice.message, "reasoning_content", None) or ""
@@ -188,6 +224,18 @@ class DeepSeekClient:
                 if reasoning:
                     LOG.debug("reasoning_content len=%d (effort=%s)", len(reasoning), reasoning_effort)
                 finish = choice.finish_reason or "unknown"
+                # 采集 token/latency:存 thread-local last_usage,并(若挂了 sink)记一条。
+                rec = {
+                    "stage": stage,
+                    "thinking": thinking_on,
+                    "effort": reasoning_effort if thinking_on else None,
+                    "latency_s": latency_s,
+                    "finish": finish,
+                    **_extract_usage(getattr(resp, "usage", None)),
+                }
+                self._tls.last_usage = rec
+                if self.metrics_sink is not None:
+                    self.metrics_sink.append(rec)
                 return text, finish
             except Exception as e:
                 last_exc = e
@@ -214,18 +262,20 @@ class DeepSeekClient:
         max_tokens: int = config.LLM_MAX_TOKENS_LOCAL,
         retry_on_length: bool = True,
         reasoning_effort: Optional[str] = None,
+        thinking: Optional[bool] = None,
+        stage: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], str, str]:
         """返回 (parsed_dict_or_None, raw_text, finish_reason)。思维链可经 last_reasoning_content 取。"""
         raw, finish = self.chat(
             system, user, temperature=temperature, max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort=reasoning_effort, thinking=thinking, stage=stage,
         )
         if finish == "length" and retry_on_length:
             LOG.warning("output truncated (length); retry with 2x max_tokens")
             raw, finish = self.chat(
                 system, user, temperature=temperature,
                 max_tokens=min(max_tokens * 2, 32768),
-                reasoning_effort=reasoning_effort,
+                reasoning_effort=reasoning_effort, thinking=thinking, stage=stage,
             )
         parsed = parse_json_response(raw)
         return parsed, raw, finish
