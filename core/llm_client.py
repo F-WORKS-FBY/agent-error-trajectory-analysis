@@ -29,6 +29,19 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
 _VALID_ESCAPE_NEXT = set('"\\/bfnrtu')
 
 
+def _infer_thinking_style(base_url: str) -> str:
+    """按 base_url 判断该用哪种 thinking 风格(见 config.LLM_THINKING_STYLE 说明)。"""
+    if config.LLM_THINKING_STYLE:
+        return config.LLM_THINKING_STYLE
+    b = (base_url or "").lower()
+    if "deepseek.com" in b:
+        return "deepseek"
+    if "siliconflow" in b:
+        # SiliconFlow 上很多模型(如 DeepSeek-V3)非推理模型,贸然发私有参数易 400 → 默认不注入。
+        return "none"
+    return "none"
+
+
 # ----------------------------------------------------------------------------
 # Error classification (reused from v1)
 # ----------------------------------------------------------------------------
@@ -148,6 +161,7 @@ class DeepSeekClient:
         base_url: str = config.LLM_BASE_URL,
         model: str = config.LLM_MODEL,
         timeout: int = config.LLM_TIMEOUT_SECONDS,
+        thinking_style: Optional[str] = None,
     ) -> None:
         if OpenAI is None:
             raise RuntimeError(
@@ -161,6 +175,8 @@ class DeepSeekClient:
                 "(向后兼容:也接受 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL。)"
             )
         self.model = model
+        # thinking 风格:deepseek / siliconflow / none。决定 chat() 注入哪种(或不注入)私有参数。
+        self.thinking_style = thinking_style or _infer_thinking_style(base_url)
         self._tls = threading.local()        # 每线程保存最近一次的 reasoning_content / usage(供 --workers 下安全取用)
         # 可选的指标接收器:设为 list 后,每次调用会 append 一条 {stage, latency_s, *_tokens} 记录。
         # 默认 None → 生产路径零开销、无内存泄漏;基准/审计时由调用方临时挂上。
@@ -194,14 +210,20 @@ class DeepSeekClient:
     ) -> Tuple[str, str]:
         # thinking 经 extra_body 传(兼容各 SDK 版本);effort 控推理强度。
         # per-call `thinking` 覆盖全局 LLM_THINKING_ENABLED;关时显式发 disabled(deepseek 默认开)。
+        # 私有参数按 thinking_style 注入:非 deepseek 端点默认**不注入**,避免 400。
         thinking_on = config.LLM_THINKING_ENABLED if thinking is None else thinking
         extra_body: Dict[str, Any] = {}
-        if thinking_on:
-            extra_body["thinking"] = {"type": "enabled"}
-            if reasoning_effort:
-                extra_body["reasoning_effort"] = reasoning_effort
-        else:
-            extra_body["thinking"] = {"type": "disabled"}
+        if self.thinking_style == "deepseek":
+            if thinking_on:
+                extra_body["thinking"] = {"type": "enabled"}
+                if reasoning_effort:
+                    extra_body["reasoning_effort"] = reasoning_effort
+            else:
+                extra_body["thinking"] = {"type": "disabled"}
+        elif self.thinking_style == "siliconflow":
+            # SiliconFlow 混合推理模型用 enable_thinking;非推理模型会忽略该字段。
+            extra_body["enable_thinking"] = bool(thinking_on)
+        # else "none": 不注入任何私有 thinking 参数(temperature 照常生效)。
         last_exc: Optional[Exception] = None
         for attempt in range(config.LLM_MAX_RETRIES):
             try:
@@ -279,3 +301,29 @@ class DeepSeekClient:
             )
         parsed = parse_json_response(raw)
         return parsed, raw, finish
+
+
+# ----------------------------------------------------------------------------
+# 每阶段 client 工厂
+# ----------------------------------------------------------------------------
+def build_stage_clients(
+    model_override: Optional[str] = None,
+    base_url_override: Optional[str] = None,
+) -> Dict[str, "DeepSeekClient"]:
+    """按 config.STAGE_LLM 为 local/phase/root 各建一个 client,
+    对相同 (model, base_url, api_key) 三元组**去重共享同一实例**(常见单模型场景仍只建 1 个)。
+
+    model_override / base_url_override(来自 CLI --model / --base-url):**全局覆盖所有阶段**,
+    保持旧的单 client 行为。
+    """
+    cache: Dict[tuple, "DeepSeekClient"] = {}
+    out: Dict[str, "DeepSeekClient"] = {}
+    for stage, cfg in config.STAGE_LLM.items():
+        model = model_override or cfg["model"]
+        base_url = base_url_override or cfg["base_url"]
+        api_key = cfg["api_key"]
+        key = (model, base_url, api_key)
+        if key not in cache:
+            cache[key] = DeepSeekClient(api_key=api_key, base_url=base_url, model=model)
+        out[stage] = cache[key]
+    return out

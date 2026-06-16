@@ -358,8 +358,14 @@ def _validate_planner_attribution(
                 errs.append(
                     f"is_faithful_implementation=true 时 step 必须=prescribed_by_step({pby}),实际={ann.step!r}"
                 )
-            if " (-> " not in ann.agent:
-                errs.append(f"忠实实现回溯须用委派态 agent 名(含 ' (-> '),实际={ann.agent!r}")
+            # 委派态判定与委派记号形式解耦:名字内含 ' (-> '(名字编码式),
+            # 或 agent == 该委派步的发起方名(字段/内容编码式)均可。
+            deleg_form_ok = (" (-> " in ann.agent) or (ann.agent == deleg.agent_name_raw)
+            if not deleg_form_ok:
+                errs.append(
+                    f"忠实实现回溯的 agent 须为委派步 {pby} 的发起方"
+                    f"(委派态 'X (-> Y)' 或 ={deleg.agent_name_raw!r}),实际={ann.agent!r}"
+                )
             if ann.primary_category not in _FAITHFUL_PRIMARY_OK:
                 errs.append(
                     f"忠实实现回溯 primary_category 须 ∈ {{C1_flawed_plan, A2_ignored_constraint}},"

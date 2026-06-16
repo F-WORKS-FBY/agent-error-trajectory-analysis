@@ -212,27 +212,20 @@ _LINKAGE_MIN_SHARED = 3
 _LINKAGE_MIN_EXEC_TOKENS = 5
 
 
-def _delegate_target(agent_name_raw: str) -> Optional[str]:
-    """委派态名的目标角色:'DiagnostAgent (-> ActionAgent)' -> 'ActionAgent';非委派名返回 None。"""
-    n = agent_name_raw or ""
-    if " (-> " in n and n.endswith(")"):
-        return n.split(" (-> ", 1)[1][:-1].strip()
-    return None
-
-
 def _nearest_preceding_delegate(
     cid: int, target_name: Optional[str], delegate_steps: List[Step]
 ) -> Optional[Step]:
-    """cid 之前、**目标 == target_name** 的最近一次 delegate(`delegate_steps` 须按 step_id 升序)。
+    """cid 之前、**委派目标 == target_name** 的最近一次 delegate(`delegate_steps` 须按 step_id 升序)。
 
+    委派目标来自 `Step.delegate_target`(由 profile 的 DelegationSpec 解析,与委派记号形式无关)。
     target_name=None 时退回"最近的任意 delegate"。目标过滤是为了防止把一个执行步错链到
-    `(-> JudgeAgent)` 的委派上(那条委派规范的是验证者的任务,不是这个执行步要实现的东西)。
+    委派给**别的**角色的委派上(那条委派规范的不是这个执行步要实现的东西)。
     """
     best: Optional[Step] = None
     for d in delegate_steps:
         if d.step_id >= cid:
             break
-        if target_name is None or _delegate_target(d.agent_name_raw) == target_name:
+        if target_name is None or d.delegate_target == target_name:
             best = d
     return best
 
@@ -301,7 +294,7 @@ def _build_delegate_linkage_hints(
             "executor_agent": s.agent_name_raw,
             "prescribed_by_delegate_step": deleg.step_id,
             "delegate_agent": deleg.agent_name_raw,
-            "delegate_target": _delegate_target(deleg.agent_name_raw),
+            "delegate_target": deleg.delegate_target,
             "strength": strength,
             "cites_plan": (m.group(0) if m else None),
             "overlap": round(overlap, 2),

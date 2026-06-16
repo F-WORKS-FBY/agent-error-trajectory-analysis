@@ -60,8 +60,21 @@ python -m MAS_trajectory_analysis.run --input-dir /path/to/your_bench --dry-run 
 | **委派态(独立可追责)** | `DiagnostAgent (-> ActionAgent)` / `(-> JudgeAgent)` | (无) |
 
 **委派态名是独立 agent**:`X (-> Y)` 代表"X 发起委派给 Y 的那一步";当根因落在委派的指令/计划里时,责任 agent 就用这个名字(与标注平台的 agent 选项一致)。`valid_agents` 用原始名(含委派态)喂给 LLM。
-其它框架的名字会落 `unknown`(不致命,仅影响分段启发式)——如需精确识别,在
-[preprocess/step_enricher.py](preprocess/step_enricher.py) 的 `PLANNERS/EXECUTORS/VERIFIERS` 集合里加上即可。
+
+## 通用化:任意 MAS / 任意格式 / 每阶段独立模型
+
+输入解析由 **`DatasetProfile`**([preprocess/profile.py](preprocess/profile.py))声明式驱动,**不再硬编码**。新框架/新格式通常只需选/写一个 profile,核心代码零改动:
+
+- **字段映射**:`history_key`、`step_id_field`(为 `None` 时**按下标枚举** —— 适配无 `step` 字段的数据集)、`role_field`、`agent_name_field`、`agent_from_role`(agent 名在 role 字段里)、`content_field`、`is_correct_field`,以及 `question/ground_truth/verifier...` 字段名。
+- **角色归一**:`role_mode="mapped"` 用 `planners/executors/verifiers/terminals/humans` 集合(默认 = OpenHands+Magentic,复刻旧行为);`role_mode="passthrough"` 把每个原始 agent 名当作自身角色(仍归一 terminal/human)—— 适配完全任意的 MAS。
+- **委派/handoff(`DelegationSpec`)**:按序尝试多策略 —— `name_regex`(名字后缀 `X (-> Y)`,默认)、`content_regex`(工具调用/编排式,如 `transfer_to_agent("Y")` / `next speaker: Y`)、`field`(独立 `to`/`recipient` 字段)。解析结果存到 `Step.delegate_target`,`action_type=="delegate"` 当且仅当其非 `None`;下游一律读该字段,不再 split 字符串。
+
+用法:`--profile <内置名|路径.json>`(内置:`default` / `who_and_when`);**省略 `--profile` 则自动嗅探**(检测 history 键、是否有 step、agent 名在 `name` 还是 `role`)。输入/输出目录用 `--input-dir`/`--output-dir` 任意设置。
+
+**每阶段独立模型/端点/key**:`LLM_{MODEL,BASE_URL,API_KEY}_{LOCAL,PHASE,ROOT}`,各自回退到全局 `LLM_*`(单模型用法零变化)。例:抽取阶段用便宜模型、根因阶段挂最强/带推理模型,甚至跨 provider 混用。`thinking` 私有参数按 `base_url` 自适配(非 DeepSeek 端点默认不注入,避免 400;`LLM_THINKING_STYLE` 可强制)。
+
+**Who&When 评测**:数据集自带 who/when/why ground truth →
+`python -m MAS_trajectory_analysis.tools.eval_who_and_when --dir <输出目录>` 直接出 agent/step 准确率。
 
 ## 输出格式(精简、纯展示型)
 

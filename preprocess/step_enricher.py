@@ -1,10 +1,16 @@
 """把原始 history dict 列表转成 Step。
 
 负责:
-- normalize_agent_name (按 5 bench 通用规则归一)
+- 字段映射(经 DatasetProfile:step_id / role / agent 名 / content 在哪)
+- normalize_agent_name(经 profile 的角色集或 passthrough 归一)
+- 委派解析(经 profile 的 DelegationSpec → Step.delegate_target)
 - action_type 决策树
 - verifier_signal / exit_code / success 启发式
 - step_hash 指纹
+
+通用化要点:
+- 缺 step_id 字段时**按 history 下标枚举**(改造前会整步丢弃 → 空轨迹)。
+- 角色集 / 委派记号全部来自 profile;默认 profile 复刻改造前行为(旧 5 bench 字节级不变)。
 """
 from __future__ import annotations
 
@@ -14,35 +20,26 @@ from typing import Dict, Any, List, Optional
 
 from .. import config
 from ..core.schema import Step
+from .profile import (
+    DatasetProfile, DEFAULT_PROFILE,
+    DEFAULT_PLANNERS, DEFAULT_EXECUTORS, DEFAULT_VERIFIERS,
+    DEFAULT_TERMINALS, DEFAULT_HUMANS,
+)
 
 
 # ----------------------------------------------------------------------------
-# Agent normalization
+# 向后兼容别名(改造前这些是本模块的模块级常量;现在权威定义在 profile.py)
 # ----------------------------------------------------------------------------
-PLANNERS = {"DiagnostAgent", "Task_Planner"}
-EXECUTORS = {"ActionAgent", "Action_Expert"}
-VERIFIERS = {"JudgeAgent", "Verification_Expert"}
-TERMINAL_NAMES = {"Computer_terminal"}
-HUMAN_NAMES = {"human"}
+PLANNERS = DEFAULT_PLANNERS
+EXECUTORS = DEFAULT_EXECUTORS
+VERIFIERS = DEFAULT_VERIFIERS
+TERMINAL_NAMES = DEFAULT_TERMINALS
+HUMAN_NAMES = DEFAULT_HUMANS
 
 
-def normalize_agent_name(name: str) -> str:
-    n = (name or "").strip()
-    if not n:
-        return "unknown"
-    # "X (-> Y)" 视为 X(委派的发起方)
-    base = n.split(" (-> ")[0].strip()
-    if base in PLANNERS:
-        return "planner"
-    if base in EXECUTORS:
-        return "executor"
-    if base in VERIFIERS:
-        return "verifier"
-    if base in TERMINAL_NAMES:
-        return "terminal"
-    if base in HUMAN_NAMES:
-        return "human"
-    return "unknown"
+def normalize_agent_name(name: str, profile: DatasetProfile = DEFAULT_PROFILE) -> str:
+    """按 profile 角色集(或 passthrough)把 agent 名归一。"""
+    return profile.normalize_role(name)
 
 
 # ----------------------------------------------------------------------------
@@ -70,14 +67,21 @@ RE_ERROR_TOKENS = re.compile(r"\b(Error|Traceback|Exception|FAIL|fatal)\b")
 # ----------------------------------------------------------------------------
 # Heuristics
 # ----------------------------------------------------------------------------
-def detect_action_type(role: str, name_raw: str, content: str) -> str:
-    if role == "user" and name_raw in HUMAN_NAMES:
+def detect_action_type(
+    role: str,
+    name_raw: str,
+    content: str,
+    delegate_target: Optional[str],
+    profile: DatasetProfile = DEFAULT_PROFILE,
+) -> str:
+    base = profile.delegation.strip_sender(name_raw)
+    if role == "user" and base in profile.humans:
         return "message"
-    if role == "user" and name_raw in TERMINAL_NAMES:
+    if role == "user" and base in profile.terminals:
         return "observation"
-    if " (-> " in name_raw:
+    if delegate_target is not None:
         return "delegate"
-    if name_raw in VERIFIERS:
+    if base in profile.verifiers:
         return "judge"
     if RE_FINISH.search(content or ""):
         return "action_finish"
@@ -135,25 +139,36 @@ def compute_step_hash(step_id: int, name: str, content: str) -> str:
 # ----------------------------------------------------------------------------
 # Public entry
 # ----------------------------------------------------------------------------
-def enrich_steps(history: List[Dict[str, Any]]) -> List[Step]:
+def enrich_steps(
+    history: List[Dict[str, Any]],
+    profile: DatasetProfile = DEFAULT_PROFILE,
+) -> List[Step]:
     steps: List[Step] = []
-    for raw in history:
+    for idx, raw in enumerate(history):
         if not isinstance(raw, dict):
             continue
-        sid = raw.get("step")
-        role = raw.get("role") or "assistant"
-        name_raw = raw.get("name") or "unknown"
-        content = raw.get("content")
-        if not isinstance(content, str):
-            content = "" if content is None else str(content)
-        if not isinstance(sid, int):
-            try:
-                sid = int(sid)
-            except (TypeError, ValueError):
-                continue
 
-        agent_norm = normalize_agent_name(name_raw)
-        action_type = detect_action_type(role, name_raw, content)
+        # step_id:profile 指定字段且为整数则用;否则按 history 下标枚举(不再丢步)。
+        sid: Optional[int] = None
+        if profile.step_id_field:
+            v = raw.get(profile.step_id_field)
+            if isinstance(v, int):
+                sid = v
+            else:
+                try:
+                    sid = int(v)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    sid = idx
+        else:
+            sid = idx
+
+        name_raw = profile.extract_agent_name(raw)
+        role = profile.extract_message_role(raw, name_raw)
+        content = profile.extract_content(raw)
+
+        delegate_target = profile.resolve_delegate_target(raw, name_raw, content)
+        agent_norm = profile.normalize_role(name_raw)
+        action_type = detect_action_type(role, name_raw, content, delegate_target, profile)
         verifier_sig = detect_verifier_signal(agent_norm, content)
         exit_code = detect_exit_code(content)
         success = detect_success(exit_code, content)
@@ -174,6 +189,7 @@ def enrich_steps(history: List[Dict[str, Any]]) -> List[Step]:
                 success=success,
                 exit_code=exit_code,
                 verifier_signal=verifier_sig,  # type: ignore[arg-type]
+                delegate_target=delegate_target,
             )
         )
     return steps

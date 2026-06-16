@@ -161,6 +161,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     except RuntimeError as e:
         print(f"[ERROR] {e}", file=sys.stderr)
         return 1
+    # 本基准只测单一配置模型 → 三个阶段共用同一个 client(metrics_sink 汇总全阶段)。
+    stage_clients = {"local": client, "phase": client, "root": client}
 
     report: Dict[str, Any] = {"config": {
         "local": {"thinking": config.LLM_THINKING_LOCAL, "effort": config.LLM_REASONING_EFFORT_LOCAL},
@@ -177,7 +179,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         client.metrics_sink = []           # 每文件重置
         try:
-            status = process_one(src, "swe_bench_pro", client, out_root,
+            status = process_one(src, "swe_bench_pro", stage_clients, out_root,
                                  overwrite=True, dry_run=False, debug_sidecar=True)
         except Exception as e:             # noqa: BLE001 — 基准要继续跑下一个
             print(f"  [ERROR] process_one 失败: {type(e).__name__}: {e}", file=sys.stderr)

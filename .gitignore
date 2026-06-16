@@ -3,6 +3,9 @@ logs/
 __pycache__/
 *.pyc
 
+# 代码索引(codegraph 生成,本地用)
+.codegraph/
+
 # 密钥 / 本地环境
 .env
 

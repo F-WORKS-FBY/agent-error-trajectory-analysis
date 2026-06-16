@@ -28,6 +28,10 @@ class Step:
     success: Optional[bool] = None
     exit_code: Optional[int] = None
     verifier_signal: Optional[Literal["PASS", "FAIL"]] = None
+    # 委派接收方(由 profile 的 DelegationSpec 解析);非委派步为 None。
+    # action_type=="delegate" 当且仅当本字段非 None。下游(global_reducer/validator)读此字段,
+    # 不再到处 split agent 名字符串。
+    delegate_target: Optional[str] = None
 
 
 # ----------------------------------------------------------------------------

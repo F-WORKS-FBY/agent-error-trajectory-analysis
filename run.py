@@ -27,8 +27,9 @@ if __package__ in (None, ""):
 
 from . import config
 from .preprocess.loader import list_input_files, load_trajectory, build_task_brief
+from .preprocess.profile import resolve_profile, DatasetProfile
 from .preprocess.segmenter import segment_trajectory, split_in_half
-from .core.llm_client import DeepSeekClient
+from .core.llm_client import DeepSeekClient, build_stage_clients
 from .analyze.local_summarizer import summarize_segment
 from .analyze.global_reducer import (
     aggregate_phases, diagnose_root_cause, build_verifier_signal_summary,
@@ -120,11 +121,12 @@ def build_summary_object(
 def process_one(
     src_path: Path,
     bench: str,
-    client: DeepSeekClient,
+    clients: Optional[Dict[str, DeepSeekClient]],
     out_root: Path,
     overwrite: bool,
     dry_run: bool,
     debug_sidecar: bool = False,
+    profile: Optional[DatasetProfile] = None,
 ) -> str:
     if _shutdown_event.is_set():
         return "cancelled"
@@ -133,15 +135,15 @@ def process_one(
     if not overwrite and is_complete_v2(out_path):
         return "skipped_existing"
 
-    data, steps = load_trajectory(src_path)
-    if data.get("is_correct", False):
+    data, steps, prof = load_trajectory(src_path, profile)
+    if data.get(prof.is_correct_field, False):
         return "skipped_success"
     if not steps:
         return "skipped_empty"
 
     step_id_set = {s.step_id for s in steps}
     valid_agents_raw = sorted({s.agent_name_raw for s in steps})
-    task_brief = build_task_brief(data, src_path.name)
+    task_brief = build_task_brief(data, src_path.name, prof)
 
     segments = segment_trajectory(steps)
     # 保险:若有段超 MAX,二分
@@ -163,17 +165,22 @@ def process_one(
             f"max_seg_chars={max_chars} max_seg_steps={max((len(s.steps) for s in segments), default=0)}"
         )
 
+    assert clients is not None, "clients must be provided when dry_run=False"
+    c_local = clients["local"]
+    c_phase = clients["phase"]
+    c_root = clients["root"]
+
     # Stage 2: local summaries
     locals_: List[LocalSummary] = []
     for seg in segments:
         if _shutdown_event.is_set():
             return "cancelled"
         seg_ids = {s.step_id for s in seg.steps}
-        ls = summarize_segment(client, seg, task_brief)
+        ls = summarize_segment(c_local, seg, task_brief)
         ok, errs = validate_local_summary(ls, seg_ids)
         if not ok:
             LOG.warning("seg %d local validate fail: %s", seg.segment_id, "; ".join(errs[:3]))
-            ls = summarize_segment(client, seg, task_brief, previous_errors=errs)
+            ls = summarize_segment(c_local, seg, task_brief, previous_errors=errs)
             ok2, errs2 = validate_local_summary(ls, seg_ids)
             if not ok2:
                 ls = coerce_local_summary(ls, seg_ids)
@@ -185,7 +192,7 @@ def process_one(
 
     # Stage 3: phase aggregation
     phases = aggregate_phases(
-        client, locals_, task_brief,
+        c_phase, locals_, task_brief,
         global_step_ids=step_id_set,
         verifier_signal_summary=build_verifier_signal_summary(steps),
     )
@@ -193,7 +200,7 @@ def process_one(
     if not ok:
         LOG.warning("phase validate fail: %s", "; ".join(errs[:3]))
         phases = aggregate_phases(
-            client, locals_, task_brief,
+            c_phase, locals_, task_brief,
             global_step_ids=step_id_set,
             verifier_signal_summary=build_verifier_signal_summary(steps),
             previous_errors=errs,
@@ -207,7 +214,7 @@ def process_one(
 
     # Stage 4: root cause
     ann = diagnose_root_cause(
-        client, phases, locals_, steps, data, task_brief,
+        c_root, phases, locals_, steps, data, task_brief,
         global_step_ids=step_id_set,
         valid_agents_raw=valid_agents_raw,
     )
@@ -215,7 +222,7 @@ def process_one(
     if not ok:
         LOG.warning("root_cause validate fail: %s", "; ".join(errs[:3]))
         ann = diagnose_root_cause(
-            client, phases, locals_, steps, data, task_brief,
+            c_root, phases, locals_, steps, data, task_brief,
             global_step_ids=step_id_set,
             valid_agents_raw=valid_agents_raw,
             previous_errors=errs,
@@ -271,8 +278,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--verbose", "-v", action="store_true", help="DEBUG 日志")
     ap.add_argument("--file", help="只处理指定文件名")
     ap.add_argument("--out-root", default=None, help="(兼容旧参数)等价于 --output-dir")
-    ap.add_argument("--model", default=None, help="覆盖 LLM 模型(默认 env LLM_MODEL / DEEPSEEK_MODEL)")
-    ap.add_argument("--base-url", default=None, help="覆盖 LLM base_url(默认 env LLM_BASE_URL / DEEPSEEK_BASE_URL)")
+    ap.add_argument("--model", default=None, help="全局覆盖 LLM 模型(所有阶段;默认 env LLM_MODEL / DEEPSEEK_MODEL)")
+    ap.add_argument("--base-url", default=None, help="全局覆盖 LLM base_url(所有阶段;默认 env LLM_BASE_URL / DEEPSEEK_BASE_URL)")
+    ap.add_argument("--profile", default=None,
+                    help="数据集 profile:内置名(default / who_and_when)或一个 .json 路径。"
+                         "不给则按数据内容自动嗅探(history 键、step 字段、agent 名位置等)。")
     return ap.parse_args(argv)
 
 
@@ -317,20 +327,29 @@ def main(argv: Optional[List[str]] = None) -> int:
              input_dir, args.benchmark, len(files), args.workers, args.dry_run,
              args.overwrite, args.debug_sidecar, out_root)
 
-    client = (
-        DeepSeekClient(
-            model=args.model or config.LLM_MODEL,
-            base_url=args.base_url or config.LLM_BASE_URL,
-        )
-        if not args.dry_run else None  # type: ignore[assignment]
+    # profile:给了内置名/.json 路径就预解析(与数据无关);不给则传 None,由每个文件自行嗅探。
+    profile_obj = resolve_profile(args.profile, {}) if args.profile else None
+    if profile_obj is not None:
+        LOG.info("profile=%s (history_key=%s step_id_field=%s role_mode=%s agent_from_role=%s)",
+                 profile_obj.name, profile_obj.history_key, profile_obj.step_id_field,
+                 profile_obj.role_mode, profile_obj.agent_from_role)
+    else:
+        LOG.info("profile=auto-sniff (每个文件按内容嗅探)")
+
+    clients = (
+        build_stage_clients(model_override=args.model, base_url_override=args.base_url)
+        if not args.dry_run else None
     )
-    if client is not None:
-        LOG.info("LLM endpoint: model=%s base_url=%s", args.model or config.LLM_MODEL,
-                 args.base_url or config.LLM_BASE_URL)
+    if clients is not None:
+        for stage in ("local", "phase", "root"):
+            c = clients[stage]
+            LOG.info("LLM[%s]: model=%s base_url=%s thinking_style=%s",
+                     stage, c.model, c._client.base_url, c.thinking_style)
 
     def _run(p: Path) -> str:
-        return process_one(p, bench_label, client, out_root, args.overwrite,
-                           args.dry_run, debug_sidecar=args.debug_sidecar)
+        return process_one(p, bench_label, clients, out_root, args.overwrite,
+                           args.dry_run, debug_sidecar=args.debug_sidecar,
+                           profile=profile_obj)
 
     stats: Dict[str, int] = {}
     total = len(files)
