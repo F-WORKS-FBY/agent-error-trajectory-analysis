@@ -208,18 +208,18 @@ DEFAULT_PROFILE = DatasetProfile(name="default")
 # ----------------------------------------------------------------------------
 # 内置 profiles
 # ----------------------------------------------------------------------------
-# Who&When:两子集同处理(step 枚举、passthrough 保留各 agent 名以利 who 归因);
-# 委派同时支持名字后缀(Hand-Crafted 的 'Orchestrator (-> WebSurfer)')与内容式 handoff。
-_WHO_WHEN_DELEG = DelegationSpec(rules=[
-    DelegationRule(strategy="name_regex", pattern=_DEFAULT_NAME_DELEG_RE),
-    DelegationRule(strategy="content_regex", pattern=_COMMON_CONTENT_DELEG_RE),
-])
-
+# Who&When:两子集同处理(step 枚举、passthrough 保留各 agent 名以利 who 归因)。
+# 委派**只用 name_regex**:Hand-Crafted 的真实委派是独立的 'Orchestrator (-> WebSurfer)' 步,
+# name_regex 已覆盖;Algorithm-Generated(CaptainAgent)无委派。
+# 不叠加 content_regex —— 它会把 Orchestrator 思考里的 "Next speaker X" 也判成委派,与那条真实委派步
+# 重复(delegate 数翻倍),反而过度强调上游委派、把根因往上游拽。content_regex 作为可选策略保留给
+# 真正只有内容式 handoff 的框架(见 _COMMON_CONTENT_DELEG_RE),不进 who_and_when。
+# 这样 --profile who_and_when 与自动嗅探(同样只用 name_regex)行为一致。
 WHO_WHEN_PROFILE = DatasetProfile(
     name="who_and_when",
     step_id_field=None,            # 无 step 字段 → 枚举
     role_mode="passthrough",
-    delegation=_WHO_WHEN_DELEG,
+    delegation=default_delegation(),
     humans=frozenset({"human", "user"}),
     terminals=frozenset({"Computer_terminal", "ComputerTerminal"}),
 )
